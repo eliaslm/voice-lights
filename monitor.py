@@ -1,73 +1,84 @@
-import time
-import re
 import os
+import re
 import requests
 
-OUTPUT_FILE = "outputs.txt"
-API_URL = "http://localhost:6121/lights/439/brightness"  # FastAPI endpoint
-BRIGHTNESS_VALUE = 0  # The brightness value to set when 'hey_elias' is detected
+PIPE_PATH = "./inference_pipe"  # Named pipe path
+API_URL = "http://localhost:6121/lights/451/brightness"
+BRIGHTNESS_VALUE = 3
 
-def parse_latest_classification():
-    """ Reads the latest classification results from the file. """
-    scores = {}
-    with open(OUTPUT_FILE, "r") as file:
-        lines = file.readlines()
+classification_buffer = []  # Buffer to store relevant classification results
 
-    # Reverse search for classification results (most recent first)
-    for i in range(len(lines) - 1, -1, -1):
-        if "#Classification results:" in lines[i]:
-            # Extract scores for hey_elias, noise, and unknown
-            for j in range(i + 1, min(i + 4, len(lines))):  # Look at next 3 lines
-                match = re.search(r"(\w+):\s([\d.]+)", lines[j])
-                if match:
-                    class_name = match.group(1)
-                    score = float(match.group(2))
-                    scores[class_name] = score
-            break  # Stop after the latest block is found
+# Regex to match only classification scores (labels like 'hey_elias', 'noise', 'unknown')
+CLASSIFICATION_REGEX = re.compile(r"^\s*(hey_elias|noise|unknown):\s([\d.]+)\s*$")
 
-    return scores
 
 def trigger_light_adjustment():
-    """ Sends a POST request to the FastAPI server to set brightness. """
+    """Sends a POST request to adjust brightness in room 439."""
     payload = {"value": BRIGHTNESS_VALUE}
     try:
-        response = requests.post(API_URL, json=payload, timeout=60)
-        if response.status_code == 200:
-            print(f"✅ Brightness set to {BRIGHTNESS_VALUE} in room 439!")
-        else:
-            print(f"⚠️ Failed to set brightness: {response.status_code}, {response.text}")
+        response = requests.post(API_URL, json=payload, timeout=10)
+        print(f"✅ API response: {response.json()}")
     except requests.exceptions.RequestException as e:
         print(f"❌ Error contacting API: {e}")
 
-def monitor_output():
-    """ Monitors the output file and triggers brightness adjustment if hey_elias is detected. """
-    print("Monitoring output file for 'hey_elias' detection...")
 
-    last_checked_size = 0  # Track the file size to detect new content
+def process_classification_block(block):
+    """Processes a full classification result block and triggers action if needed."""
+    scores = {}
 
-    while True:
-        try:
-            current_size = os.path.getsize(OUTPUT_FILE)
-            if current_size != last_checked_size:  # New content detected
-                scores = parse_latest_classification()
+    # Extract class scores from the block
+    for line in block:
+        match = CLASSIFICATION_REGEX.match(line)
+        if match:
+            class_name = match.group(1)  # e.g., hey_elias
+            score = float(match.group(2))  # e.g., 0.003906
+            scores[class_name] = score
 
-                if scores:
-                    highest_class = max(scores, key=scores.get)  # Get the class with the highest score
-                    print(f"Latest Classification: {scores}")
+    if scores:
+        print(f"🔍 Full Classification Detected: {scores}")
 
-                    if highest_class == "hey_elias":
-                        print("🚀 'hey_elias' detected with highest confidence! Sending API request...")
-                        trigger_light_adjustment()
+        # Determine the class with the highest score
+        highest_class = max(scores, key=scores.get)
 
-                last_checked_size = current_size  # Update file size tracker
+        if highest_class == "hey_elias":
+            print("🚀 'hey_elias' detected with highest confidence! Triggering API...")
+            trigger_light_adjustment()
 
-            time.sleep(1)  # Check for updates every second
-        except KeyboardInterrupt:
-            print("Stopping monitoring...")
-            break
-        except FileNotFoundError:
-            print(f"Waiting for {OUTPUT_FILE} to be created...")
-            time.sleep(2)
+
+def monitor_pipe():
+    """Reads classification results in real-time from the named pipe and processes full blocks."""
+    print(f"📡 Listening for inference results in {PIPE_PATH}...")
+
+    try:
+        with open(PIPE_PATH, "r") as pipe:
+            while True:
+                line = pipe.readline().strip()
+
+                if not line:  # Detect EOF (command stopped or disconnected)
+                    print("⚠️ No more data. Exiting...")
+                    break
+
+                # Add line to buffer
+                classification_buffer.append(line)
+
+                # If the line signals the start of a new classification block, process the previous one
+                if (
+                    "#Classification results:" in line
+                    and len(classification_buffer) > 1
+                ):
+                    process_classification_block(classification_buffer)
+                    classification_buffer.clear()  # Clear buffer for next block
+
+    except FileNotFoundError:
+        print(f"❌ Named pipe {PIPE_PATH} not found! Run: mkfifo {PIPE_PATH}")
+    except KeyboardInterrupt:
+        print("\n🛑 Stopping monitoring...")
+    except Exception as e:
+        print(f"❌ Unexpected error: {e}")
+
 
 if __name__ == "__main__":
-    monitor_output()
+    if not os.path.exists(PIPE_PATH):
+        print(f"❌ Named pipe {PIPE_PATH} not found! Run: mkfifo {PIPE_PATH}")
+    else:
+        monitor_pipe()
