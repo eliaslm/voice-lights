@@ -3,6 +3,7 @@ import re
 import requests
 import typer
 from dotenv import load_dotenv
+from loguru import logger
 
 # Load environment variables from .env file
 load_dotenv()
@@ -13,8 +14,14 @@ CONFIDENCE_THRESHOLD = 0.40  # Minimum confidence to trigger an action
 classification_buffer = []  # Buffer to store classification results
 is_processing = False  # Tracks if the API is currently adjusting the lights
 
+# Get PIPE_PATH from environment variables or CLI argument
+DEFAULT_PIPE_PATH = os.getenv("PIPE_PATH", "./inference_pipe")
+
 # Regex to match only classification scores (off, white, yellow, noise, unknown)
 CLASSIFICATION_REGEX = re.compile(r"^\s*(off|white|yellow|noise|unknown):\s([\d.]+)\s*$")
+
+# Configure Loguru Logger
+logger.add("monitor.log", rotation="10MB", retention="7 days", level="DEBUG")
 
 def send_request(base_api_url, endpoint, value):
     """ Sends a POST request to the given API endpoint with the specified value. """
@@ -22,17 +29,18 @@ def send_request(base_api_url, endpoint, value):
     url = f"{base_api_url}/{endpoint}"
 
     try:
-        print(f"📡 Sending request: {endpoint} = {value}")
+        logger.info(f"📡 Sending request: {endpoint} = {value}")
         response = requests.post(url, json=payload, timeout=10)
-        print(f"✅ API response ({endpoint}={value}): {response.json()}")
+        response.raise_for_status()
+        logger.success(f"✅ API response ({endpoint}={value}): {response.json()}")
     except requests.exceptions.RequestException as e:
-        print(f"❌ Error contacting API: {e}")
+        logger.error(f"❌ Error contacting API: {e}")
 
 def process_classification_block(base_api_url, block):
     """ Processes a full classification result block and triggers an action if needed. """
     global is_processing
     if is_processing:
-        print("⏳ API is still processing, discarding this block...")
+        logger.warning("⏳ API is still processing, discarding this block...")
         return  # Ignore new classifications while API is adjusting the lights
 
     scores = {}
@@ -46,7 +54,7 @@ def process_classification_block(base_api_url, block):
             scores[class_name] = score
 
     if scores:
-        print(f"🔍 Full Classification Detected: {scores}")
+        logger.info(f"🔍 Full Classification Detected: {scores}")
 
         # Determine the class with the highest score
         highest_class = max(scores, key=scores.get)
@@ -54,7 +62,7 @@ def process_classification_block(base_api_url, block):
 
         # If it's off, white, or yellow AND score > 0.40, trigger API request
         if highest_class in {"off", "white", "yellow"} and highest_score > CONFIDENCE_THRESHOLD:
-            print(f"🚀 Detected {highest_class} with confidence {highest_score}. Sending API request...")
+            logger.info(f"🚀 Detected {highest_class} with confidence {highest_score}. Sending API request...")
 
             is_processing = True  # Block new commands until API is done
 
@@ -70,7 +78,7 @@ def process_classification_block(base_api_url, block):
 
 def flush_fifo(pipe_path):
     """ Discards old results from the FIFO until a new classification block begins. """
-    print(f"🧹 Flushing old FIFO data from {pipe_path}...")
+    logger.info(f"🧹 Flushing old FIFO data from {pipe_path}...")
 
     try:
         with open(pipe_path, "r") as pipe:
@@ -81,16 +89,16 @@ def flush_fifo(pipe_path):
 
                 # Stop flushing once a new classification block starts
                 if "#Classification results:" in line:
-                    print("🟢 Found new classification block, resuming processing...")
+                    logger.info("🟢 Found new classification block, resuming processing...")
                     return  
     except Exception as e:
-        print(f"⚠️ Error while flushing FIFO: {e}")
+        logger.warning(f"⚠️ Error while flushing FIFO: {e}")
 
 def monitor_pipe(room_number: int, pipe_path: str):
     """ Reads classification results in real-time from the named pipe and processes full blocks. """
     base_api_url = f"http://localhost:6121/lights/{room_number}"
     
-    print(f"📡 Monitoring room {room_number} - Inference results from {pipe_path}...")
+    logger.info(f"📡 Monitoring room {room_number} - Inference results from {pipe_path}...")
 
     try:
         with open(pipe_path, "r") as pipe:
@@ -98,7 +106,7 @@ def monitor_pipe(room_number: int, pipe_path: str):
                 line = pipe.readline().strip()
 
                 if not line:  # Detect EOF (command stopped or disconnected)
-                    print("⚠️ No more data. Exiting...")
+                    logger.warning("⚠️ No more data. Exiting...")
                     break
 
                 # Add line to buffer
@@ -110,23 +118,23 @@ def monitor_pipe(room_number: int, pipe_path: str):
                     classification_buffer.clear()  # Clear buffer for next block
 
     except FileNotFoundError:
-        print(f"❌ Named pipe {pipe_path} not found! Run: mkfifo {pipe_path}")
+        logger.error(f"❌ Named pipe {pipe_path} not found! Run: mkfifo {pipe_path}")
     except KeyboardInterrupt:
-        print("\n🛑 Stopping monitoring...")
+        logger.info("\n🛑 Stopping monitoring...")
     except Exception as e:
-        print(f"❌ Unexpected error: {e}")
+        logger.error(f"❌ Unexpected error: {e}")
 
 @app.command()
 def main(
     room_number: int,
     pipe_path: str = typer.Option(
-        os.getenv("PIPE_PATH", "./inference_pipe"),
+        DEFAULT_PIPE_PATH,
         help="Path to the named pipe for inference output"
     ),
 ):
     """Start monitoring the FIFO pipe and adjust lights for the given room number."""
     if not os.path.exists(pipe_path):
-        print(f"❌ Named pipe {pipe_path} not found! Run: mkfifo {pipe_path}")
+        logger.error(f"❌ Named pipe {pipe_path} not found! Run: mkfifo {pipe_path}")
     else:
         monitor_pipe(room_number, pipe_path)
 
