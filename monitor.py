@@ -11,15 +11,18 @@ app = typer.Typer()
 
 CONFIDENCE_THRESHOLD = 0.40
 DEFAULT_PIPE_PATH = os.getenv("PIPE_PATH", "./inference_pipe")
+DEFAULT_API_ROOT_URL = os.getenv("API_ROOT_URL", "http://localhost:6121/lights")
 
-CLASSIFICATION_REGEX = re.compile(r"^\s*(off|white|yellow|noise|unknown):\s([\d.]+)\s*$")
+CLASSIFICATION_REGEX = re.compile(
+    r"^\s*(off|white|yellow|noise|unknown):\s([\d.]+)\s*$"
+)
 
 
 class Monitor:
-    def __init__(self, room_number: int, pipe_path: str):
+    def __init__(self, room_number: int, pipe_path: str, api_root_url: str):
         self.room_number = room_number
         self.pipe_path = pipe_path
-        self.base_api_url = f"http://localhost:6121/lights/{room_number}"
+        self.base_api_url = f"{api_root_url}/{room_number}"
         self.classification_buffer = []
         self.is_processing = False
 
@@ -57,8 +60,13 @@ class Monitor:
             highest_class = max(scores, key=scores.get)
             highest_score = scores[highest_class]
 
-            if highest_class in {"off", "white", "yellow"} and highest_score > CONFIDENCE_THRESHOLD:
-                logger.info(f"🚀 Detected {highest_class} with confidence {highest_score}. Sending API request...")
+            if (
+                highest_class in {"off", "white", "yellow"}
+                and highest_score > CONFIDENCE_THRESHOLD
+            ):
+                logger.info(
+                    f"🚀 Detected {highest_class} with confidence {highest_score}. Sending API request..."
+                )
 
                 self.is_processing = True
 
@@ -84,14 +92,18 @@ class Monitor:
                         break
 
                     if "#Classification results:" in line:
-                        logger.info("🟢 Found new classification block, resuming processing...")
+                        logger.info(
+                            "🟢 Found new classification block, resuming processing..."
+                        )
                         return
         except Exception as e:
             logger.warning(f"⚠️ Error while flushing FIFO: {e}")
 
     def monitor_pipe(self):
         """Reads classification results in real-time from the named pipe and processes full blocks."""
-        logger.info(f"📡 Monitoring room {self.room_number} - Inference results from {self.pipe_path}...")
+        logger.info(
+            f"📡 Monitoring room {self.room_number} - Inference results from {self.pipe_path}..."
+        )
 
         try:
             with open(self.pipe_path, "r") as pipe:
@@ -104,12 +116,17 @@ class Monitor:
 
                     self.classification_buffer.append(line)
 
-                    if "#Classification results:" in line and len(self.classification_buffer) > 1:
+                    if (
+                        "#Classification results:" in line
+                        and len(self.classification_buffer) > 1
+                    ):
                         self.process_classification_block()
                         self.classification_buffer.clear()
 
         except FileNotFoundError:
-            logger.error(f"❌ Named pipe {self.pipe_path} not found! Run: mkfifo {self.pipe_path}")
+            logger.error(
+                f"❌ Named pipe {self.pipe_path} not found! Run: mkfifo {self.pipe_path}"
+            )
         except KeyboardInterrupt:
             logger.info("\n🛑 Stopping monitoring...")
         except Exception as e:
@@ -120,8 +137,10 @@ class Monitor:
 def main(
     room_number: int,
     pipe_path: str = typer.Option(
-        DEFAULT_PIPE_PATH,
-        help="Path to the named pipe for inference output"
+        DEFAULT_PIPE_PATH, help="Path to the named pipe for inference output"
+    ),
+    api_root_url: str = typer.Option(
+        DEFAULT_API_ROOT_URL, help="API root url, e.g., 'http://localhost:6121/lights'."
     ),
 ):
     """Start monitoring the FIFO pipe and adjust lights for the given room number."""
@@ -129,7 +148,9 @@ def main(
         logger.error(f"❌ Named pipe {pipe_path} not found! Run: mkfifo {pipe_path}")
         return
 
-    monitor = Monitor(room_number, pipe_path)
+    monitor = Monitor(
+        room_number=room_number, pipe_path=pipe_path, api_root_url=api_root_url
+    )
     monitor.monitor_pipe()
 
 
