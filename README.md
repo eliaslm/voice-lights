@@ -1,5 +1,8 @@
 # 🎙️ Edge Impulse + Nordic Thingy:53 + Light Control Demo
 
+<img src="https://github.com/user-attachments/assets/82eb08c7-b659-42a3-8d05-a9b4d5782d22" width=400 />
+
+
 ## **Overview**
 This is a demo script for a **Lunch & Learn** session on how to:
 - Train a **voice classification model** using [Edge Impulse](https://www.edgeimpulse.com/).
